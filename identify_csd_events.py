@@ -105,36 +105,47 @@ def classify(ref, alt, motifs, event_codes):
 def change_character(text, index, char):
     return text[:index] + char + text[index + 1:]
 
-def identify(variant, ref, motifs, event_codes, window=25, motif_len=6):
+def identify(variant, ref, motifs, event_codes, snvs, window=25, motif_len=6):
     results = {
         'is_only_motif': True,
         'ambiguous': False,
         'no_pas': False,
-        'events': None
+        'events': None,
+        'interfered': False
     }
     # Fetch initial sequence with where mutation could affect PAS
+    start = variant.start - (motif_len - 1) - window
+    end = variant.stop + (motif_len - 1) + window
     seq = fetch_seq(
         ref,
         variant.chrom,
-        variant.start - (motif_len - 1) - window,
-        variant.stop + (motif_len - 1) + window
+        start,
+        end
     )
-    logging.debug('seq: {}'.format(seq))
+    genomic_coords = range(start + 1, end + 1)
+    logging.debug('genomic_coords: {}'.format(genomic_coords))
+    #logging.debug('snvs in range: {}'.format([(x,snvs[variant.chrom][x]) for x in snvs[variant.chrom] if genomic_coords[0] <= x <= genomic_coords[-1]]))
+    seq_alt = [x for x in seq]
+    edits = 0
+    for i in xrange(window, (motif_len * 2) + 1):
+        logging.debug('Looking at genomic_coords {} = {}'.format(i, genomic_coords[i]))
+        if variant.chrom in snvs:
+            if genomic_coords[i] in snvs[variant.chrom]:
+                seq_alt[i] = snvs[variant.chrom][genomic_coords[i]]
+                edits += 1
+    if edits > 1:
+        results['interfered'] = True
+    seq_alt = ('').join(seq_alt)
+    logging.debug('seq:\t\t{}'.format(seq))
+    logging.debug('seq_alt:\t{}'.format(seq_alt))
     pas_refs = get_all_substrings(seq, motif_len)
-    logging.debug('pas_refs left window: {}'.format(pas_refs[:window]))
+    pas_alts = get_all_substrings(seq_alt, motif_len)
+    #logging.debug('pas_refs left window: {}'.format(pas_refs[:window]))
     logging.debug('pas_refs regular: {}'.format(pas_refs[window : window + motif_len]))
-    logging.debug('pas_refs right window: {}'.format(pas_refs[window + motif_len:]))
-    # Copy the reference PAS
-    pas_alts = deepcopy(pas_refs)
-    # Apply the mutation to each reference PAS
-    for i in xrange(window, window + motif_len):
-        logging.debug('before: {}'.format(pas_alts[i][1]))
-        logging.debug('Changing: change_character({}, {}, {})'.format(pas_alts[i][1], (motif_len + window - 1) - i, variant.alts[0]))
-        pas_alts[i][1] = change_character(pas_alts[i][1], (motif_len + window - 1) - i, variant.alts[0])
-        logging.debug('after: {}'.format(pas_alts[i][1]))
-    logging.debug('pas_alts left window: {}'.format(pas_alts[:window]))
+    #logging.debug('pas_refs right window: {}'.format(pas_refs[window + motif_len:]))
+    #logging.debug('pas_alts left window: {}'.format(pas_alts[:window]))
     logging.debug('pas_alts regular: {}'.format(pas_alts[window : window + motif_len]))
-    logging.debug('pas_alts right window: {}'.format(pas_alts[window + motif_len:]))
+    #logging.debug('pas_alts right window: {}'.format(pas_alts[window + motif_len:]))
     # If there are no PAS in either list then there are no events
     if not any([x[1] in motifs for x in pas_refs[window : window + motif_len] + pas_alts[window : window + motif_len]]):
         logging.debug('No PAS')
@@ -142,7 +153,6 @@ def identify(variant, ref, motifs, event_codes, window=25, motif_len=6):
         return results
     # Classify events if any
     events = []
-    logging.debug('motifs: {}'.format(motifs))
     for i in xrange(window, window + motif_len):
         logging.debug('Classify {} -> {}'.format(pas_refs[i][1], pas_alts[i][1]))
         event = classify(pas_refs[i][1], pas_alts[i][1], motifs, event_codes)
@@ -191,9 +201,26 @@ def write_result(result, output_columns, delim='\t'):
         str(result[x]) for x in output_columns
     ]) + '\n'
 
+def generate_snv_dict(vcf):
+    # Keep track of all SNPs - generate snp dict
+    snps = {}
+    for v in vcf.fetch(reopen=False):
+        if 'INDEL' in v.info.keys():
+            continue
+        if len(v.alts) > 1:
+            continue
+        if v.alts[0] is None:
+            continue
+
+        if v.chrom in snps:
+            snps[v.chrom][v.pos] = v.alts[0]
+        else:
+            snps[v.chrom] = {v.pos: v.alts[0]}
+    return snps
+
 ## Argument parser
 parser = argparse.ArgumentParser(
-    description = 'Given VCF output return a file displaying the ' \
+    description = 'Given sorted VCF output return a file displaying the ' \
     'create, shift, and destroy events for polyadenylation signals'
 )
 
@@ -208,14 +235,6 @@ parser.add_argument(
 parser.add_argument(
     'pid',
     help = 'The patient ID'
-)
-parser.add_argument(
-    'vcf_type',
-    choices = (
-        'jacusa',
-        'strelka'
-    ),
-    help = 'Type of VCF output'
 )
 parser.add_argument(
     '-psw',
@@ -426,16 +445,6 @@ previously_known = 0
 # Track the number of variants within regions
 in_regions = 0
 
-
-# Total number of variants
-total_variants = len([x for x in pysam.VariantFile(args.variants)])
-
-# If the input is not jacusa there is only one sample
-sample_index = 0
-# Pick index based on VCF input
-if args.vcf_type == 'jacusa':
-    sample_index = 1
-
 # Define output file
 outpath = os.path.join(args.outdir, '{}.info'.format(args.name))
 outfile = open(outpath, 'w')
@@ -444,10 +453,10 @@ outfile.write((args.delimiter).join(output_columns) + '\n')
 # Load known variants
 known_variants = pysam.VariantFile(args.exclude_variants)
 
-# Track variants which have been analyzed
-analyzed = set()
+# Generate SNV dictionary
+snvs = generate_snv_dict(variants)
 
-last_result = None
+to_write = []
 # Iterate through defined regions:
 iterator = regions_iterator
 for region in iterator:
@@ -463,17 +472,10 @@ for region in iterator:
         filters = {
             'pass' : True,
             'low_coverage' : False,
-            'interfered' : False,
             'ambiguous' : False,
             'is_only_motif' : False,
             'previously_known' : False
         }
-        identity = (variant.chrom, variant.pos, variant.ref, variant.alts)
-        if identity in analyzed:
-            continue
-        else:
-            analyzed.add(identity)
-        in_regions += 1
         if not check_jacusa_pass(variant):
             # Variant did not pass
             not_passed += 1
@@ -491,7 +493,8 @@ for region in iterator:
         if not check_alts(variant):
             multiple_alts += 1
             continue
-        result = identify(variant, reference, motifs, event_codes, window=args.pas_search_window)
+        logging.debug('motifs: {}'.format(motifs))
+        result = identify(variant, reference, motifs, event_codes, snvs, window=args.pas_search_window)
         if result['no_pas']:
             no_pas += 1
             continue
@@ -507,11 +510,6 @@ for region in iterator:
             no_event += 1
             continue
         result['events'] = result['events'][0]
-        if not last_result:
-            last_result = result
-        elif (variant.chrom == last_result['chrom']) and (abs(variant.pos - last_result['pos']) < motif_len):
-            filters['interfered'] = True
-            last_result = result
         logging.debug('result: {}'.format(result))
         result['wgs_tumor_ref_depth'] = variant.samples[0]['BC'][bc_lookup[variant.ref]]
         result['wgs_tumor_alt_depth'] = variant.samples[0]['BC'][bc_lookup[variant.alts[0]]]
@@ -536,47 +534,11 @@ for region in iterator:
         result['pas_end'] = result['events']['pos'] + motif_len - 1
         result['pass'] = filters['pass']
         result['ambiguous'] = filters['ambiguous']
-        result['interfered'] = filters['interfered']
         result['is_only_motif'] = filters['is_only_motif']
         result['previously_known'] = filters['previously_known']
-        logging.debug('filters: {}'.format(filters))
         outfile.write(
             write_result(result, output_columns, args.delimiter)
         )
 
 regions_file.close()
 outfile.close()
-
-# Stats file will record various stats about the run
-#stats_path = os.path.join(args.outdir, '{}.stats'.format(args.name))
-#stats_columns = (
-#    'total_variants',
-#    'in_regions',
-#    'not_passed',
-#    'previously_known',
-#    'low_coverage',
-#    'low_alt',
-#    'multiple_alts',
-#    'no_pas',
-#    'ambiguous',
-#    'interfere',
-#    'is_only_motif',
-#    'no_event',
-#    'breakdown'
-#)
-## This variable will just be a comma-separated string showing how many
-## variants are remaining after each filter
-#diffs = [total_variants, in_regions]
-#for i in xrange(2, len(stats_columns) - 1):
-#    diff = diffs[i - 1] - eval(stats_columns[i])
-#    diffs.append(diff)
-#breakdown = (',').join([str(x) for x in diffs])
-#with open(stats_path, 'w') as o:
-#    o.write(
-#        (args.delimiter).join(stats_columns) + '\n'
-#    )
-#    o.write(
-#        (args.delimiter).join(
-#            [str(eval(x)) for x in stats_columns]
-#        ) + '\n'
-#    )
