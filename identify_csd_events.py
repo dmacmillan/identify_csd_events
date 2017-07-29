@@ -105,7 +105,7 @@ def classify(ref, alt, motifs, event_codes):
 def change_character(text, index, char):
     return text[:index] + char + text[index + 1:]
 
-def identify(variant, ref, motifs, event_codes, snvs, window=25, motif_len=6):
+def identify(variant, ref, motifs, event_codes, snvs, window=50, motif_len=6):
     results = {
         'is_only_motif': True,
         'ambiguous': False,
@@ -127,7 +127,7 @@ def identify(variant, ref, motifs, event_codes, snvs, window=25, motif_len=6):
     #logging.debug('snvs in range: {}'.format([(x,snvs[variant.chrom][x]) for x in snvs[variant.chrom] if genomic_coords[0] <= x <= genomic_coords[-1]]))
     seq_alt = [x for x in seq]
     edits = 0
-    for i in xrange(window, (motif_len * 2) + 1):
+    for i in xrange(window, window + ((motif_len - 1) * 2) + 1):
         logging.debug('Looking at genomic_coords {} = {}'.format(i, genomic_coords[i]))
         if variant.chrom in snvs:
             if genomic_coords[i] in snvs[variant.chrom]:
@@ -185,6 +185,13 @@ def identify(variant, ref, motifs, event_codes, snvs, window=25, motif_len=6):
     results['events'] = events
     return results
 
+# Given a list of events, resolve the overall effect
+# events::type::dict
+# events::keys::[pos, event_code, pas_ref, pas_alt]
+def resolve_events(events):
+    return
+    #
+
 def check_alts(variant):
     if len(variant.alts) > 1:
         return False
@@ -240,7 +247,7 @@ parser.add_argument(
     '-psw',
     '--pas_search_window',
     type = int,
-    default = 25,
+    default = 50,
     help = 'The window surrounding each variant to search for additional polyadenylation signals ' \
     'in the patient\'s normal DNA. Default = 50'
 )
@@ -422,29 +429,6 @@ codes_event = {v:k for k,v in event_codes.items()}
 # Load reference sequence
 reference = pysam.FastaFile(args.reference)
 
-# Keep track of variants that did not pass all filters
-not_passed = 0
-# Keep track of variants that did not have enough coverage
-low_coverage = 0
-# Track the number of variants with more than one alternate base
-multiple_alts = 0
-# Track the number of variants with no PAS signals
-no_pas = 0
-# Track the number of variants with no events
-no_event = 0
-# Track the number of variants that are ambiguous
-# Ambiguity comes from a single variant causing multiple effects
-ambiguous = 0
-# Track the number of variants that are interfered
-# Interference comes from multiple variations within the same motif
-interfere = 0
-# Track the number of variants that are not the only motif
-is_only_motif = 0
-# Track the number of variants that match dbsnp calls
-previously_known = 0
-# Track the number of variants within regions
-in_regions = 0
-
 # Define output file
 outpath = os.path.join(args.outdir, '{}.info'.format(args.name))
 outfile = open(outpath, 'w')
@@ -453,10 +437,12 @@ outfile.write((args.delimiter).join(output_columns) + '\n')
 # Load known variants
 known_variants = pysam.VariantFile(args.exclude_variants)
 
+# Track variants which have been analyzed
+analyzed = set()
+
 # Generate SNV dictionary
 snvs = generate_snv_dict(variants)
 
-to_write = []
 # Iterate through defined regions:
 iterator = regions_iterator
 for region in iterator:
@@ -476,38 +462,38 @@ for region in iterator:
             'is_only_motif' : False,
             'previously_known' : False
         }
+        identity = (variant.chrom, variant.pos, variant.ref, variant.alts)
+        if identity in analyzed:
+            continue
+        else:
+            analyzed.add(identity)
         if not check_jacusa_pass(variant):
             # Variant did not pass
-            not_passed += 1
-            #continue
             filters['pass'] = False
         if check_dbsnp(variant, known_variants):
-            previously_known += 1
-            #continue
             filters['previously_known'] = True
         if not check_coverage(variant, args.minimum_coverage):
             # Variant does not have sufficient coverage
-            low_coverage += 1
-            #continue
             filters['low_coverage'] = True
         if not check_alts(variant):
-            multiple_alts += 1
             continue
         logging.debug('motifs: {}'.format(motifs))
-        result = identify(variant, reference, motifs, event_codes, snvs, window=args.pas_search_window)
+        result = identify(
+            variant,
+            reference,
+            motifs,
+            event_codes,
+            snvs,
+            window = args.pas_search_window,
+            motif_len = motif_len
+        )
         if result['no_pas']:
-            no_pas += 1
             continue
         elif result['ambiguous']:
-            ambiguous += 1
-            #continue
             filters['ambiguous'] = result['ambiguous']
         elif not result['is_only_motif']:
-            is_only_motif += 1
-            #continue
             filters['is_only_motif'] = True
         if not result['events']:
-            no_event += 1
             continue
         result['events'] = result['events'][0]
         logging.debug('result: {}'.format(result))
