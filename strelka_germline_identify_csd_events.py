@@ -1,5 +1,3 @@
-__version__ = '1.1.1'
-
 ## Standard modules
 import argparse
 import os
@@ -47,8 +45,8 @@ def get_alt_percent(variant, threshold, bc_lookup):
     return result
 
 # Check if jacusa variant is a pass or not
-def check_pass(variant, valid):
-    if variant.filter.keys() != valid:
+def check_strelka_pass(variant):
+    if variant.filter.keys() != ['PASS']:
         return False
     return True
 
@@ -57,10 +55,9 @@ def get_all_substrings(string, mlength):
 
 # Return true or false if the variant samples meet the coverage threshold
 # threshold = int = minimum coverage threshold
-def check_coverage(depths, threshold):
-    for i in xrange(len(depths)):
-        if (depths[i] < threshold):
-            return False
+def check_coverage(variant, threshold):
+    if (sum(variant.samples[0]['AD']) < threshold):
+        return False
     return True
 
 # Check if a variant matches one in dbsnp
@@ -110,10 +107,10 @@ def change_character(text, index, char):
 def identify(variant, ref, motifs, event_codes, snvs, window=50, motif_len=6):
     results = {
         'is_only_motif': True,
+        'ambiguous': False,
         'no_pas': False,
         'events': None,
-        'other_edits': [],
-        'outer_motifs': []
+        'interfered': False
     }
     # Fetch initial sequence with where mutation could affect PAS
     start = variant.start - (motif_len - 1) - window
@@ -128,18 +125,15 @@ def identify(variant, ref, motifs, event_codes, snvs, window=50, motif_len=6):
     logging.debug('genomic_coords: {}'.format(genomic_coords))
     #logging.debug('snvs in range: {}'.format([(x,snvs[variant.chrom][x]) for x in snvs[variant.chrom] if genomic_coords[0] <= x <= genomic_coords[-1]]))
     seq_alt = [x for x in seq]
+    edits = 0
     for i in xrange(window, window + ((motif_len - 1) * 2) + 1):
         logging.debug('Looking at genomic_coords {} = {}'.format(i, genomic_coords[i]))
         if variant.chrom in snvs:
-            if (genomic_coords[i] in snvs[variant.chrom]) and (genomic_coords[i] != variant.pos):
-                logging.debug('Variant seen at {} pos {}'.format(variant.chrom, genomic_coords[i]))
+            if genomic_coords[i] in snvs[variant.chrom]:
                 seq_alt[i] = snvs[variant.chrom][genomic_coords[i]]
-                results['other_edits'].append(
-                    '{}:{}'.format(variant.chrom, genomic_coords[i])
-                )
-    if results['other_edits']:
-        results['other_edits'] = (',').join(results['other_edits'])
-    logging.debug('results[\'other_edits\']: {}'.format(results['other_edits']))
+                edits += 1
+    if edits > 1:
+        results['interfered'] = True
     seq_alt = ('').join(seq_alt)
     logging.debug('seq:\t\t{}'.format(seq))
     logging.debug('seq_alt:\t{}'.format(seq_alt))
@@ -176,8 +170,8 @@ def identify(variant, ref, motifs, event_codes, snvs, window=50, motif_len=6):
     nevents = len(events)
     if nevents > 1:
         logging.debug('multiple events: {}'.format(events))
+        results['ambiguous'] = True
         results['events'] = events
-        nevent_codes = [x['event_code'] for x in events]
         return results
     # If no events return nothing
     elif nevents == 0:
@@ -185,12 +179,8 @@ def identify(variant, ref, motifs, event_codes, snvs, window=50, motif_len=6):
     # Check window for additional motifs
     outer_indices = range(window) + range(motif_len + window, motif_len + (window * 2) - 1)
     logging.debug('outer_indices: {}'.format(outer_indices))
-    for i in outer_indices:
-        if pas_refs[i][1] in motifs:
-            logging.debug('{} found at genomic coord {}'.format(pas_refs[i][1], genomic_coords[i]))
-            results['outer_motifs'].append((genomic_coords[i], motifs[pas_refs[i][1]]))
-            results['is_only_motif'] = False
-    results['outer_motifs'] = (',').join(sorted([str(x[1]) for x in results['outer_motifs']]))
+    if any([pas_refs[x][1] in motifs for x in outer_indices]):
+        results['is_only_motif'] = False
     results['events'] = events
     return results
 
@@ -213,7 +203,6 @@ def get_strength(candidate, motifs):
         return 'NAN'
 
 def write_result(result, output_columns, delim='\t'):
-    logging.debug('result[outer_motifs]: {}'.format(result['outer_motifs']))
     return (delim).join([
         str(result[x]) for x in output_columns
     ]) + '\n'
@@ -262,11 +251,6 @@ parser.add_argument(
     help = 'The patient ID'
 )
 parser.add_argument(
-    'mode',
-    choices = ('jacusa', 'strelka_somatic', 'strelka_germline', 'gatk'),
-    help = 'One of ("jacusa", "strelka_somatic", "strelka_germline")'
-)
-parser.add_argument(
     '-psw',
     '--pas_search_window',
     type = int,
@@ -277,9 +261,9 @@ parser.add_argument(
 parser.add_argument(
     '-reg',
     '--regions',
-    default = '/projects/dmacmillanprj2/notebooks/PAS_SNP_Analysis/Homo_sapiens.GRCh37.87.gtf.sorted.merged.nonoverlapping.bed.gz',
-    help = 'A BED file for which only variants within defined regions will be considered. ' \
-    'Default = "/projects/dmacmillanprj2/notebooks/PAS_SNP_Analysis/Homo_sapiens.GRCh37.87.gtf.sorted.merged.nonoverlapping.bed.gz"'
+    default = '/projects/dmacmillanprj2/notebooks/PAS_SNP_Analysis/utr3.75.gff',
+    help = 'A GFF file for which only variants within defined regions will be considered. ' \
+    'Default = "/projects/dmacmillanprj2/notebooks/PAS_SNP_Analysis/utr3.75.gff"'
 )
 parser.add_argument(
     '-ref',
@@ -380,6 +364,15 @@ CANDIDATE_PASS = {
     'GGGGCT': 16
 }
 
+# Number of samples for strelka
+nsamples = 2
+
+# Samples for strelka
+samples = (
+    'normal',
+    'tumor'
+)
+
 # Define motif length
 motif_len = 6
 
@@ -396,7 +389,7 @@ rev_comp = partial(reverse_complement, translation_table = translation_table)
 REV_COMP_CANDIDATE_PASS = {rev_comp(k):v for k,v in CANDIDATE_PASS.items()}
 
 # Output columns
-output_columns = [
+output_columns = (
     'chrom',
     'pos',
     'gene',
@@ -412,39 +405,15 @@ output_columns = [
     'pas_alt_strength',
     'pas_start',
     'pas_end',
-    'wgs_tumor_ref_depth',
-    'wgs_tumor_alt_depth',
-    'rna_tumor_ref_depth',
-    'rna_tumor_alt_depth',
-    'other_edits',
-    'event_codes',
-    'outer_motifs',
+    'genotype',
+    'ref_depth',
+    'alt_depth',
     'pass',
+    'ambiguous',
+    'interfered',
     'is_only_motif',
     'previously_known'
-]
-if args.mode == 'strelka_somatic':
-    output_columns[
-        output_columns.index('rna_tumor_ref_depth')
-    ] = 'wgs_normal_ref_depth'
-    output_columns[
-        output_columns.index('rna_tumor_alt_depth')
-    ] = 'wgs_normal_alt_depth'
-elif args.mode == 'strelka_germline':
-    output_columns.remove('wgs_tumor_ref_depth')
-    output_columns.remove('wgs_tumor_alt_depth')
-    output_columns.remove('rna_tumor_ref_depth')
-    output_columns.remove('rna_tumor_alt_depth')
-    output_columns.insert(output_columns.index('pas_end') + 1, 'genotype')
-    output_columns.insert(output_columns.index('genotype') + 1, 'ref_depth')
-    output_columns.insert(output_columns.index('ref_depth') + 1, 'alt_depth')
-elif args.mode == 'gatk':
-    output_columns[
-        output_columns.index('rna_tumor_ref_depth')
-    ] = 'wgs_normal_ref_depth'
-    output_columns[
-        output_columns.index('rna_tumor_alt_depth')
-    ] = 'wgs_normal_alt_depth'
+)
 
 # Define the regions in which to consider variants
 regions_file = open(args.regions, 'r')
@@ -489,10 +458,6 @@ analyzed = set()
 # Generate SNV dictionary
 snvs = generate_snv_dict(variants)
 
-valid_signal = ['PASS']
-if args.mode == 'jacusa':
-    valid_signal = ['*']
-
 # Iterate through defined regions:
 iterator = regions_iterator
 for region in iterator:
@@ -508,6 +473,8 @@ for region in iterator:
         filters = {
             'pass' : True,
             'low_coverage' : False,
+            'ambiguous' : False,
+            'is_only_motif' : False,
             'previously_known' : False
         }
         identity = (variant.chrom, variant.pos, variant.ref, variant.alts)
@@ -515,16 +482,12 @@ for region in iterator:
             continue
         else:
             analyzed.add(identity)
-        if not check_pass(variant, valid_signal):
+        if not check_strelka_pass(variant):
             # Variant did not pass
             filters['pass'] = False
         if check_dbsnp(variant, known_variants):
             filters['previously_known'] = True
-        if args.mode == 'strelka_germline':
-            depths = [variant.samples[0]['AD']]
-        else:
-            depths = [variant.samples[i]['DP'] for i in variant.samples]
-        if not check_coverage(depths, args.minimum_coverage):
+        if not check_coverage(variant, args.minimum_coverage):
             # Variant does not have sufficient coverage
             filters['low_coverage'] = True
         if not check_alts(variant):
@@ -539,39 +502,18 @@ for region in iterator:
             window = args.pas_search_window,
             motif_len = motif_len
         )
-        if not result['outer_motifs']:
-            result['outer_motifs'] = 'NAN'
         if result['no_pas']:
             continue
+        elif result['ambiguous']:
+            filters['ambiguous'] = result['ambiguous']
+        elif not result['is_only_motif']:
+            filters['is_only_motif'] = True
         if not result['events']:
             continue
-        #result['events'] = result['events'][0]
+        result['events'] = result['events'][0]
         logging.debug('result: {}'.format(result))
-        if args.mode == 'jacusa':
-            result['wgs_tumor_ref_depth'] = variant.samples[0]['BC'][bc_lookup[variant.ref]]
-            result['wgs_tumor_alt_depth'] = variant.samples[0]['BC'][bc_lookup[variant.alts[0]]]
-            result['rna_tumor_ref_depth'] = variant.samples[1]['BC'][bc_lookup[variant.ref]]
-            result['rna_tumor_alt_depth'] = variant.samples[1]['BC'][bc_lookup[variant.alts[0]]]
-        elif args.mode == 'strelka_somatic':
-            try:
-                result['wgs_tumor_ref_depth'] = variant.samples[1]['{}U'.format(variant.ref)][0]
-            except KeyError:
-                result['wgs_tumor_ref_depth'] = 'NAN'
-            try:
-                result['wgs_tumor_alt_depth'] = variant.samples[1]['{}U'.format(variant.alts[0])][0]
-            except KeyError:
-                result['wgs_tumor_alt_depth'] = 'NAN'
-            try:
-                result['wgs_normal_ref_depth'] = variant.samples[0]['{}U'.format(variant.ref)][0]
-            except KeyError:
-                result['wgs_normal_ref_depth'] = 'NAN'
-            try:
-                result['wgs_normal_alt_depth'] = variant.samples[0]['{}U'.format(variant.alts[0])][0]
-            except KeyError:
-                result['wgs_normal_alt_depth'] = 'NAN'
-        elif args.mode == 'strelka_germline':
-            result['ref_depth'], result['alt_depth'] = variant.samples[0]['AD']
-            result['genotype'] = interpret_genotype(variant.samples[0]['GT'])
+        result['ref_depth'], result['alt_depth'] = variant.samples[0]['AD']
+        result['genotype'] = interpret_genotype(variant.samples[0]['GT'])
         result['chrom'] = variant.chrom
         # 1-based coord
         result['pos'] = variant.pos
@@ -581,26 +523,21 @@ for region in iterator:
         result['cohort'] = args.cohort
         result['ref'] = variant.ref
         result['alt'] = variant.alts[0]
+        result['effect'] = codes_event[result['events']['event_code']]
+        result['pas_ref'] = result['events']['pas_ref']
+        result['pas_alt'] = result['events']['pas_alt']
+        result['pas_ref_strength'] = get_strength(result['pas_ref'], motifs)
+        result['pas_alt_strength'] = get_strength(result['pas_alt'], motifs)
+        # 1-based coords
+        result['pas_start'] = result['events']['pos']
+        result['pas_end'] = result['events']['pos'] + motif_len - 1
         result['pass'] = filters['pass']
+        result['ambiguous'] = filters['ambiguous']
+        result['is_only_motif'] = filters['is_only_motif']
         result['previously_known'] = filters['previously_known']
-        result['event_codes'] = (',').join([codes_event[x['event_code']] for x in result['events']])
-        for event in result['events']:
-            result['effect'] = codes_event[event['event_code']]
-            result['pas_ref'] = event['pas_ref']
-            result['pas_alt'] = event['pas_alt']
-            result['pas_ref_strength'] = get_strength(result['pas_ref'], motifs)
-            result['pas_alt_strength'] = get_strength(result['pas_alt'], motifs)
-            # 1-based coords
-            result['pas_start'] = event['pos']
-            result['pas_end'] = event['pos'] + motif_len - 1
-            for key in output_columns:
-                if key not in result:
-                    result[key] = 'NAN'
-                elif not result[key]:
-                    result[key] = 'NAN'
-            outfile.write(
-                write_result(result, output_columns, args.delimiter)
-            )
+        outfile.write(
+            write_result(result, output_columns, args.delimiter)
+        )
 
 regions_file.close()
 outfile.close()
