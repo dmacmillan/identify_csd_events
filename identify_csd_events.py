@@ -454,7 +454,7 @@ elif args.mode == 'gatk':
 
 # Define the regions in which to consider variants
 regions_file = open(args.regions, 'r')
-regions_iterator = pysam.tabix_iterator(regions_file, parser=pysam.asGTF())
+regions_iterator = pysam.tabix_iterator(regions_file, parser=pysam.asBed())
 
 # Define variants
 variants = pysam.VariantFile(args.variants)
@@ -502,7 +502,7 @@ if args.mode == 'jacusa':
 # Iterate through defined regions:
 iterator = regions_iterator
 for region in iterator:
-    gene = region.attributes.split('::')[1]
+    gene = region.name
     motifs = CANDIDATE_PASS
     if region.strand == '-':
         motifs = REV_COMP_CANDIDATE_PASS
