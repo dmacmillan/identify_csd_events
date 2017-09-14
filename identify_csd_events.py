@@ -585,6 +585,7 @@ for region in iterator:
         result['strand'] = region.strand
         result['pid'] = args.pid
         result['cohort'] = args.cohort
+        result['state'] = args.state
         result['ref'] = variant.ref
         result['alt'] = variant.alts[0]
         result['pass'] = filters['pass']
