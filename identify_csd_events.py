@@ -1,4 +1,4 @@
-__version__ = '1.1.1'
+__version__ = '1.2.0'
 
 ## Standard modules
 import argparse
@@ -262,6 +262,11 @@ parser.add_argument(
     help = 'The patient ID'
 )
 parser.add_argument(
+    'state',
+    choices = ('diseased', 'normal'),
+    help = 'The state'
+)
+parser.add_argument(
     'mode',
     choices = ('jacusa', 'strelka_somatic', 'strelka_germline', 'gatk'),
     help = 'One of ("jacusa", "strelka_somatic", "strelka_germline")'
@@ -403,6 +408,7 @@ output_columns = [
     'strand',
     'cohort',
     'pid',
+    'state',
     'ref',
     'alt',
     'effect',
