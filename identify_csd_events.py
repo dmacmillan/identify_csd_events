@@ -1,4 +1,4 @@
-__version__ = '1.2.0'
+__version__ = '1.2.1'
 
 ## Standard modules
 import argparse
@@ -141,6 +141,7 @@ def identify(variant, ref, motifs, event_codes, snvs, window=50, motif_len=6):
         results['other_edits'] = (',').join(results['other_edits'])
     logging.debug('results[\'other_edits\']: {}'.format(results['other_edits']))
     seq_alt = ('').join(seq_alt)
+    seqlen_diff = len(seq_alt) - len(seq)
     logging.debug('seq:\t\t{}'.format(seq))
     logging.debug('seq_alt:\t{}'.format(seq_alt))
     pas_refs = get_all_substrings(seq, motif_len)
@@ -526,13 +527,17 @@ for region in iterator:
             filters['pass'] = False
         if check_dbsnp(variant, known_variants):
             filters['previously_known'] = True
+        depths = 'NAN'
         if args.mode == 'strelka_germline':
             depths = [variant.samples[0]['AD']]
+        elif args.mode == 'gatk':
+            depths = [variant.samples[i][x] for i in variant.samples for x in ('REF_F2R1', 'REF_F1R2', 'ALT_F2R1', 'ALT_F1R2')]
         else:
             depths = [variant.samples[i]['DP'] for i in variant.samples]
-        if not check_coverage(depths, args.minimum_coverage):
-            # Variant does not have sufficient coverage
-            filters['low_coverage'] = True
+        if depths != 'NAN':
+            if not check_coverage(depths, args.minimum_coverage):
+                # Variant does not have sufficient coverage
+                filters['low_coverage'] = True
         if not check_alts(variant):
             continue
         logging.debug('motifs: {}'.format(motifs))
@@ -558,6 +563,11 @@ for region in iterator:
             result['wgs_tumor_alt_depth'] = variant.samples[0]['BC'][bc_lookup[variant.alts[0]]]
             result['rna_tumor_ref_depth'] = variant.samples[1]['BC'][bc_lookup[variant.ref]]
             result['rna_tumor_alt_depth'] = variant.samples[1]['BC'][bc_lookup[variant.alts[0]]]
+        elif args.mode == 'gatk':
+            result['wgs_tumor_ref_depth'] = variant.samples[0]['REF_F1R2'] + variant.samples[0]['REF_F2R1']
+            result['wgs_tumor_alt_depth'] = variant.samples[0]['ALT_F1R2'] + variant.samples[0]['ALT_F2R1']
+            result['wgs_normal_ref_depth'] = variant.samples[1]['REF_F1R2'] + variant.samples[1]['REF_F2R1']
+            result['wgs_normal_alt_depth'] = variant.samples[1]['ALT_F1R2'] + variant.samples[1]['ALT_F2R1']
         elif args.mode == 'strelka_somatic':
             try:
                 result['wgs_tumor_ref_depth'] = variant.samples[1]['{}U'.format(variant.ref)][0]
@@ -603,7 +613,7 @@ for region in iterator:
             for key in output_columns:
                 if key not in result:
                     result[key] = 'NAN'
-                elif not result[key]:
+                elif not result[key] and result[key] != 0:
                     result[key] = 'NAN'
             outfile.write(
                 write_result(result, output_columns, args.delimiter)
