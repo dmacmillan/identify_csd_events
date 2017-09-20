@@ -1,4 +1,4 @@
-__version__ = '1.2.1'
+__version__ = '1.2.2'
 
 ## Standard modules
 import argparse
@@ -83,22 +83,22 @@ def classify(ref, alt, motifs, event_codes):
             logging.debug('alt {} in motifs'.format(alt))
             # Ref is stronger meaning shift_down event
             if (motifs[ref] < motifs[alt]):
-                logging.debug('ref {} < alt {} shift_down'.format(ref, alt))
+                logging.debug('ref {} < alt {} SHIFT_DOWN'.format(ref, alt))
                 return event_codes['shift_down']
             # Alt is stronger meaning shift_up event
             elif (motifs[alt] < motifs[ref]):
-                logging.debug('alt {} < ref {}, shift_up'.format(alt, ref))
+                logging.debug('alt {} < ref {}, SHIFT_UP'.format(alt, ref))
                 return event_codes['shift_up']
         # Destroy event
         else:
-            logging.debug('alt {} NOT in motifs, destroy'.format(alt))
+            logging.debug('alt {} NOT in motifs, DESTROY'.format(alt))
             return event_codes['destroy']
     # Either a creation or no event
     else:
         logging.debug('ref {} NOT in motifs'.format(ref))
         # Creation event
         if (alt in motifs):
-            logging.debug('alt {} in motifs, create'.format(alt))
+            logging.debug('alt {} in motifs, CREATE'.format(alt))
             return event_codes['create']
         else:
             logging.debug('alt {} NOT in motifs, NO EVENT'.format(alt))
@@ -127,39 +127,42 @@ def identify(variant, ref, motifs, event_codes, snvs, window=50, motif_len=6):
     genomic_coords = range(start + 1, end + 1)
     logging.debug('genomic_coords: {}'.format(genomic_coords))
     #logging.debug('snvs in range: {}'.format([(x,snvs[variant.chrom][x]) for x in snvs[variant.chrom] if genomic_coords[0] <= x <= genomic_coords[-1]]))
+    seq = [x for x in seq]
     seq_alt = [x for x in seq]
     for i in xrange(window, window + ((motif_len - 1) * 2) + 1):
         logging.debug('Looking at genomic_coords {} = {}'.format(i, genomic_coords[i]))
         if variant.chrom in snvs:
-            if (genomic_coords[i] in snvs[variant.chrom]) and (genomic_coords[i] != variant.pos):
+            if (genomic_coords[i] in snvs[variant.chrom]):
                 logging.debug('Variant seen at {} pos {}'.format(variant.chrom, genomic_coords[i]))
                 seq_alt[i] = snvs[variant.chrom][genomic_coords[i]]
-                results['other_edits'].append(
-                    '{}:{}'.format(variant.chrom, genomic_coords[i])
-                )
+                varlen = len(snvs[variant.chrom][genomic_coords[i]])
+                seq[i] += '-'*(varlen-1)
+                if (genomic_coords[i] != variant.pos):
+                    results['other_edits'].append(
+                        '{}:{}'.format(variant.chrom, genomic_coords[i])
+                    )
     if results['other_edits']:
         results['other_edits'] = (',').join(results['other_edits'])
     logging.debug('results[\'other_edits\']: {}'.format(results['other_edits']))
+    seq = ('').join(seq)
     seq_alt = ('').join(seq_alt)
-    seqlen_diff = len(seq_alt) - len(seq)
+    seq_alt_len = len(seq_alt)
     logging.debug('seq:\t\t{}'.format(seq))
     logging.debug('seq_alt:\t{}'.format(seq_alt))
     pas_refs = get_all_substrings(seq, motif_len)
     pas_alts = get_all_substrings(seq_alt, motif_len)
-    #logging.debug('pas_refs left window: {}'.format(pas_refs[:window]))
-    logging.debug('pas_refs regular: {}'.format(pas_refs[window : window + motif_len]))
-    #logging.debug('pas_refs right window: {}'.format(pas_refs[window + motif_len:]))
-    #logging.debug('pas_alts left window: {}'.format(pas_alts[:window]))
-    logging.debug('pas_alts regular: {}'.format(pas_alts[window : window + motif_len]))
-    #logging.debug('pas_alts right window: {}'.format(pas_alts[window + motif_len:]))
+    #logging.debug('pas_refs regular: {}'.format(pas_refs[window : window + motif_len]))
+    #logging.debug('pas_alts regular: {}'.format(pas_alts[window : window + motif_len]))
+    logging.debug('pas_refs regular: {}'.format(pas_refs[window : seq_alt_len - window - motif_len + 1]))
+    logging.debug('pas_alts regular: {}'.format(pas_alts[window : seq_alt_len - window - motif_len + 1]))
     # If there are no PAS in either list then there are no events
-    if not any([x[1] in motifs for x in pas_refs[window : window + motif_len] + pas_alts[window : window + motif_len]]):
+    if not any([x[1] in motifs for x in pas_refs[window : seq_alt_len - window - motif_len + 1] + pas_alts[window : seq_alt_len - window - motif_len + 1]]):
         logging.debug('No PAS')
         results['no_pas'] = True
         return results
     # Classify events if any
     events = []
-    for i in xrange(window, window + motif_len):
+    for i in xrange(window, seq_alt_len - window - motif_len + 1):
         logging.debug('Classify {} -> {}'.format(pas_refs[i][1], pas_alts[i][1]))
         event = classify(pas_refs[i][1], pas_alts[i][1], motifs, event_codes)
         if event is not None:
@@ -270,7 +273,7 @@ parser.add_argument(
 parser.add_argument(
     'mode',
     choices = ('jacusa', 'strelka_somatic', 'strelka_germline', 'gatk'),
-    help = 'One of ("jacusa", "strelka_somatic", "strelka_germline")'
+    help = 'One of ("jacusa", "strelka_somatic", "strelka_germline", "gatk")'
 )
 parser.add_argument(
     '-psw',
@@ -301,28 +304,32 @@ parser.add_argument(
     help = 'Delimiter to use in output. Default = "\\t"'
 )
 parser.add_argument(
-    '-ev',
-    '--exclude_variants',
+    '--dbsnp',
     default = '/projects/dmacmillanprj2/notebooks/PAS_SNP_Analysis/common_all_20170403.vcf.gz',
-    help = 'An indexed VCF file containing known variants to exclude from consideration'
+    help = 'An indexed VCF file containing known variants to exclude from consideration (i.e. dbsnp)'
 )
 parser.add_argument(
-    '-mc',
-    '--minimum_coverage',
-    type = int,
-    default = 10,
-    help = 'The minimum level of coverage for a variant. Default = 10'
+    '--skip_not_passed',
+    action='store_true',
+    help = 'Set this flag in order to skip analysis of variants not passed by all software filters'
 )
-parser.add_argument(
-    '-map',
-    '--min_alt_percent',
-    type = int,
-    default = 20,
-    help = 'For Jacusa output, the minimum percentage of alternative base ' \
-    'present in the RNA-Seq pileup. For example setting this value to 60 ' \
-    'would only accept variant calls if at least 60%% of bases at that position are ' \
-    'one of the alternative bases. Default = 20'
-)
+#parser.add_argument(
+#    '-mc',
+#    '--minimum_coverage',
+#    type = int,
+#    default = 10,
+#    help = 'The minimum level of coverage for a variant. Default = 10'
+#)
+#parser.add_argument(
+#    '-map',
+#    '--min_alt_percent',
+#    type = int,
+#    default = 20,
+#    help = 'For Jacusa output, the minimum percentage of alternative base ' \
+#    'present in the RNA-Seq pileup. For example setting this value to 60 ' \
+#    'would only accept variant calls if at least 60%% of bases at that position are ' \
+#    'one of the alternative bases. Default = 20'
+#)
 parser.add_argument(
     '-l',
     '--log_level',
@@ -488,7 +495,7 @@ outfile = open(outpath, 'w')
 outfile.write((args.delimiter).join(output_columns) + '\n')
 
 # Load known variants
-known_variants = pysam.VariantFile(args.exclude_variants)
+known_variants = pysam.VariantFile(args.dbsnp)
 
 # Track variants which have been analyzed
 analyzed = set()
@@ -514,7 +521,6 @@ for region in iterator:
         logging.debug('variant: {}'.format(str(variant).strip()))
         filters = {
             'pass' : True,
-            'low_coverage' : False,
             'previously_known' : False
         }
         identity = (variant.chrom, variant.pos, variant.ref, variant.alts)
@@ -525,6 +531,9 @@ for region in iterator:
         if not check_pass(variant, valid_signal):
             # Variant did not pass
             filters['pass'] = False
+            # This is purely for speed
+            if args.skip_not_passed == True:
+                continue
         if check_dbsnp(variant, known_variants):
             filters['previously_known'] = True
         depths = 'NAN'
@@ -534,10 +543,6 @@ for region in iterator:
             depths = [variant.samples[i][x] for i in variant.samples for x in ('REF_F2R1', 'REF_F1R2', 'ALT_F2R1', 'ALT_F1R2')]
         else:
             depths = [variant.samples[i]['DP'] for i in variant.samples]
-        if depths != 'NAN':
-            if not check_coverage(depths, args.minimum_coverage):
-                # Variant does not have sufficient coverage
-                filters['low_coverage'] = True
         if not check_alts(variant):
             continue
         logging.debug('motifs: {}'.format(motifs))
